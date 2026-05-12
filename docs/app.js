@@ -15,9 +15,11 @@ const uiEl = document.getElementById("ui");
 // Init
 // ---------------------------------------------------------------------------
 
+const t0 = Date.now();
+function elapsed() { return ((Date.now() - t0) / 1000).toFixed(1) + "s"; }
 function setStatus(msg) {
-  console.log("[statiq]", msg);
-  loadingSubEl.textContent = msg;
+  console.log(`[statiq +${elapsed()}]`, msg);
+  loadingSubEl.textContent = `${msg}  (${elapsed()})`;
 }
 
 async function init() {
@@ -30,8 +32,11 @@ async function init() {
       stdout: (s) => console.log("[py]", s),
       stderr: (s) => console.error("[py]", s),
     });
-    setStatus("Pyodide ready. Loading numpy + scipy (≈10 MB)…");
-    await pyodide.loadPackage(["numpy", "scipy"]);
+    setStatus("Pyodide ready. Loading numpy + scipy (≈50 MB; this is the slow part)…");
+    await pyodide.loadPackage(["numpy", "scipy"], {
+      messageCallback: (m) => setStatus(`${m}`),
+      errorCallback: (m) => console.error("[load]", m),
+    });
 
     setStatus("Loading statiq distribution module…");
     const distRes = await fetch("distributions.py");
