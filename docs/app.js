@@ -1,249 +1,427 @@
-// statiq — browser app powered by Pyodide
+// statiq web — pure JS via jStat. ~17 most-used distributions.
 
-let pyodide;
-let DISTS = [];           // list of distribution metadata
-let currentDist = null;   // currently selected distribution
-let currentParams = {};   // {paramName: value}
-let currentOp = "probability";
 const SLIDER_STEPS = 1000;
 
+// ---------------------------------------------------------------------------
+// Distribution definitions
+//
+// Each distribution exposes: pdf(x, p), cdf(x, p), ppf(q, p), rvs(p, rng).
+// For discrete distributions, `pdf` returns the pmf.
+// `defaultSupport(p)` returns a reasonable [lo, hi] for plotting.
+// ---------------------------------------------------------------------------
+
+const J = jStat;
+
+// Marsaglia & Tsang RNG seeded for reproducible samples
+function makeRng(seed) {
+  if (!seed || seed === 0) return Math.random;
+  let s = seed >>> 0;
+  return function() {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+function sampleDiscrete(p, rng, ppf) {
+  return Math.round(ppf(rng(), p));
+}
+
+// Helper: ppf for discrete via cdf scan
+function discretePpf(cdf, p, q, kMin = 0, kMaxHint = 1000) {
+  let k = kMin;
+  while (k < kMaxHint) {
+    if (cdf(k, p) >= q) return k;
+    k++;
+  }
+  return kMaxHint;
+}
+
+// Numerical root-finder (brentq-style bisection with linear interpolation)
+function findRoot(f, lo, hi, tol = 1e-9, maxIter = 200) {
+  let fa = f(lo), fb = f(hi);
+  if (isNaN(fa) || isNaN(fb)) throw new Error("Search bounds yield invalid values.");
+  if (fa * fb > 0) throw new Error("Sign does not change across search interval — widen bounds.");
+  for (let i = 0; i < maxIter; i++) {
+    const mid = (lo + hi) / 2;
+    const fm = f(mid);
+    if (isNaN(fm) || Math.abs(hi - lo) < tol) return mid;
+    if (fa * fm < 0) {
+      hi = mid; fb = fm;
+    } else {
+      lo = mid; fa = fm;
+    }
+  }
+  return (lo + hi) / 2;
+}
+
+const DISTS = [
+  // ---- DISCRETE ----
+  {
+    name: "Bernoulli", discrete: true,
+    params: [{name: "p", description: "Probability of success", default: 0.5, integer: false, min: 0, max: 1}],
+    default_x: 0,
+    info_text: "<b>What it is:</b> A single yes/no trial.<br><br><b>When to use:</b> One coin flip, one product pass/fail.",
+    pdf: (k, p) => (k === 0 ? 1 - p.p : k === 1 ? p.p : 0),
+    cdf: (k, p) => (k < 0 ? 0 : k < 1 ? 1 - p.p : 1),
+    ppf: (q, p) => (q <= 1 - p.p ? 0 : 1),
+    rvs: (p, rng) => (rng() < p.p ? 1 : 0),
+    defaultSupport: () => [0, 1],
+  },
+  {
+    name: "Binomial", discrete: true,
+    params: [
+      {name: "n", description: "Number of trials", default: 10, integer: true, min: 1},
+      {name: "p", description: "Probability of success", default: 0.5, integer: false, min: 0, max: 1},
+    ],
+    default_x: 5,
+    info_text: "<b>What it is:</b> Number of successes in n independent yes/no trials.<br><br><b>When to use:</b> How many of 20 students pass a test, defective items in a batch.",
+    pdf: (k, p) => J.binomial.pdf(Math.round(k), Math.round(p.n), p.p),
+    cdf: (k, p) => J.binomial.cdf(Math.floor(k), Math.round(p.n), p.p),
+    ppf: (q, p) => discretePpf((k, pp) => J.binomial.cdf(k, Math.round(pp.n), pp.p), p, q, 0, Math.round(p.n) + 1),
+    rvs: (p, rng) => {
+      let k = 0;
+      for (let i = 0; i < Math.round(p.n); i++) if (rng() < p.p) k++;
+      return k;
+    },
+    defaultSupport: (p) => [0, Math.round(p.n)],
+  },
+  {
+    name: "Geometric", discrete: true,
+    params: [{name: "p", description: "Probability of success", default: 0.3, integer: false, min: 0, max: 1, exclusive_min: true}],
+    default_x: 3,
+    info_text: "<b>What it is:</b> Number of failures before the first success (scipy convention: k = 1, 2, …).<br><br><b>When to use:</b> Trials until first success.",
+    pdf: (k, p) => (k >= 1 ? Math.pow(1 - p.p, k - 1) * p.p : 0),
+    cdf: (k, p) => (k < 1 ? 0 : 1 - Math.pow(1 - p.p, Math.floor(k))),
+    ppf: (q, p) => Math.max(1, Math.ceil(Math.log(1 - q) / Math.log(1 - p.p))),
+    rvs: (p, rng) => Math.max(1, Math.ceil(Math.log(rng()) / Math.log(1 - p.p))),
+    defaultSupport: (p) => [1, Math.max(15, Math.ceil(5 / p.p))],
+  },
+  {
+    name: "Negative Binomial", discrete: true,
+    params: [
+      {name: "r", description: "Number of successes target", default: 5, integer: true, min: 1},
+      {name: "p", description: "Probability of success", default: 0.5, integer: false, min: 0, max: 1, exclusive_min: true},
+    ],
+    default_x: 5,
+    info_text: "<b>What it is:</b> Number of failures before r-th success.<br><br><b>When to use:</b> Quality testing until a target number of successes.",
+    pdf: (k, p) => J.negbin.pdf(Math.round(k), Math.round(p.r), p.p),
+    cdf: (k, p) => J.negbin.cdf(Math.floor(k), Math.round(p.r), p.p),
+    ppf: (q, p) => discretePpf((k, pp) => J.negbin.cdf(k, Math.round(pp.r), pp.p), p, q, 0, 5000),
+    rvs: (p, rng) => {
+      let succ = 0, fail = 0;
+      while (succ < Math.round(p.r)) { if (rng() < p.p) succ++; else fail++; }
+      return fail;
+    },
+    defaultSupport: (p) => [0, Math.ceil(p.r * (1 - p.p) / p.p * 3 + 10)],
+  },
+  {
+    name: "Poisson", discrete: true,
+    params: [{name: "λ", description: "Rate (mean)", default: 4.0, integer: false, min: 0, exclusive_min: true}],
+    default_x: 4,
+    info_text: "<b>What it is:</b> Count of rare events in a fixed interval.<br><br><b>When to use:</b> Customer arrivals per hour, typos per page, radioactive decay counts.",
+    pdf: (k, p) => J.poisson.pdf(Math.round(k), p.λ),
+    cdf: (k, p) => J.poisson.cdf(Math.floor(k), p.λ),
+    ppf: (q, p) => discretePpf((k, pp) => J.poisson.cdf(k, pp.λ), p, q, 0, Math.ceil(p.λ * 5 + 20)),
+    rvs: (p, rng) => {
+      // Knuth's algorithm
+      const L = Math.exp(-p.λ);
+      let k = 0, prod = 1;
+      do { k++; prod *= rng(); } while (prod > L);
+      return k - 1;
+    },
+    defaultSupport: (p) => [0, Math.max(15, Math.ceil(p.λ + 4 * Math.sqrt(p.λ)))],
+  },
+  {
+    name: "Hypergeometric", discrete: true,
+    params: [
+      {name: "N", description: "Population size", default: 50, integer: true, min: 1},
+      {name: "K", description: "Successes in population", default: 20, integer: true, min: 0},
+      {name: "n", description: "Sample size", default: 10, integer: true, min: 1},
+    ],
+    default_x: 4,
+    info_text: "<b>What it is:</b> Successes drawn in n picks without replacement from population N with K successes.<br><br><b>When to use:</b> Lottery, audit samples, capture-recapture.",
+    pdf: (k, p) => hypergeomPmf(Math.round(k), Math.round(p.N), Math.round(p.K), Math.round(p.n)),
+    cdf: (k, p) => {
+      let s = 0;
+      for (let i = 0; i <= Math.floor(k); i++) s += hypergeomPmf(i, Math.round(p.N), Math.round(p.K), Math.round(p.n));
+      return s;
+    },
+    ppf: (q, p) => discretePpf((k, pp) => {
+      let s = 0;
+      for (let i = 0; i <= k; i++) s += hypergeomPmf(i, Math.round(pp.N), Math.round(pp.K), Math.round(pp.n));
+      return s;
+    }, p, q, 0, Math.min(Math.round(p.K), Math.round(p.n))),
+    rvs: (p, rng) => {
+      // Draw without replacement simulation
+      const N = Math.round(p.N), K = Math.round(p.K), n = Math.round(p.n);
+      let remaining = N, successes = K, draws = 0;
+      for (let i = 0; i < n; i++) {
+        if (rng() < successes / remaining) { draws++; successes--; }
+        remaining--;
+      }
+      return draws;
+    },
+    defaultSupport: (p) => [Math.max(0, Math.round(p.n) - (Math.round(p.N) - Math.round(p.K))), Math.min(Math.round(p.K), Math.round(p.n))],
+  },
+  {
+    name: "Discrete Uniform", discrete: true,
+    params: [
+      {name: "a", description: "Lower bound", default: 1, integer: true},
+      {name: "b", description: "Upper bound (inclusive)", default: 6, integer: true},
+    ],
+    default_x: 3,
+    info_text: "<b>What it is:</b> Each integer in [a, b] equally likely.<br><br><b>When to use:</b> Rolling a fair die, choosing a random integer.",
+    pdf: (k, p) => {
+      const a = Math.round(p.a), b = Math.round(p.b);
+      return (k >= a && k <= b && k === Math.round(k)) ? 1 / (b - a + 1) : 0;
+    },
+    cdf: (k, p) => {
+      const a = Math.round(p.a), b = Math.round(p.b);
+      if (k < a) return 0;
+      if (k >= b) return 1;
+      return (Math.floor(k) - a + 1) / (b - a + 1);
+    },
+    ppf: (q, p) => {
+      const a = Math.round(p.a), b = Math.round(p.b);
+      return Math.min(b, a + Math.ceil(q * (b - a + 1)) - 1);
+    },
+    rvs: (p, rng) => {
+      const a = Math.round(p.a), b = Math.round(p.b);
+      return a + Math.floor(rng() * (b - a + 1));
+    },
+    defaultSupport: (p) => [Math.round(p.a), Math.round(p.b)],
+  },
+
+  // ---- CONTINUOUS ----
+  {
+    name: "Normal", discrete: false,
+    params: [
+      {name: "μ", description: "Mean", default: 0.0, integer: false},
+      {name: "σ", description: "Standard deviation", default: 1.0, integer: false, min: 0, exclusive_min: true},
+    ],
+    default_x: 0.0,
+    info_text: "<b>What it is:</b> The bell curve. Symmetric around the mean.<br><br><b>When to use:</b> Heights, test scores, measurement errors, sums of many small independent effects.",
+    pdf: (x, p) => J.normal.pdf(x, p.μ, p.σ),
+    cdf: (x, p) => J.normal.cdf(x, p.μ, p.σ),
+    ppf: (q, p) => J.normal.inv(q, p.μ, p.σ),
+    rvs: (p, rng) => p.μ + p.σ * boxMuller(rng),
+    defaultSupport: (p) => [p.μ - 4 * p.σ, p.μ + 4 * p.σ],
+  },
+  {
+    name: "Standard Normal", discrete: false,
+    params: [],
+    default_x: 0.0,
+    info_text: "<b>What it is:</b> Normal with μ=0 and σ=1.<br><br><b>When to use:</b> Z-scores, standardized test statistics, the basis for tables in stats textbooks.",
+    pdf: (x) => J.normal.pdf(x, 0, 1),
+    cdf: (x) => J.normal.cdf(x, 0, 1),
+    ppf: (q) => J.normal.inv(q, 0, 1),
+    rvs: (_, rng) => boxMuller(rng),
+    defaultSupport: () => [-4, 4],
+  },
+  {
+    name: "Lognormal", discrete: false,
+    params: [
+      {name: "μ", description: "Mean of ln X", default: 0.0, integer: false},
+      {name: "σ", description: "SD of ln X", default: 1.0, integer: false, min: 0, exclusive_min: true},
+    ],
+    default_x: 1.0,
+    info_text: "<b>What it is:</b> Variable whose logarithm is normal. Right-skewed.<br><br><b>When to use:</b> Incomes, stock prices, biological growth, anything multiplicative.",
+    pdf: (x, p) => x > 0 ? J.lognormal.pdf(x, p.μ, p.σ) : 0,
+    cdf: (x, p) => x > 0 ? J.lognormal.cdf(x, p.μ, p.σ) : 0,
+    ppf: (q, p) => J.lognormal.inv(q, p.μ, p.σ),
+    rvs: (p, rng) => Math.exp(p.μ + p.σ * boxMuller(rng)),
+    defaultSupport: (p) => [0, Math.exp(p.μ + 3 * p.σ)],
+  },
+  {
+    name: "Exponential", discrete: false,
+    params: [{name: "λ", description: "Rate", default: 1.0, integer: false, min: 0, exclusive_min: true}],
+    default_x: 1.0,
+    info_text: "<b>What it is:</b> Waiting time between Poisson events. Memoryless.<br><br><b>When to use:</b> Time to next phone call, time until next radioactive decay.",
+    pdf: (x, p) => x >= 0 ? J.exponential.pdf(x, p.λ) : 0,
+    cdf: (x, p) => x >= 0 ? J.exponential.cdf(x, p.λ) : 0,
+    ppf: (q, p) => -Math.log(1 - q) / p.λ,
+    rvs: (p, rng) => -Math.log(rng()) / p.λ,
+    defaultSupport: (p) => [0, 6 / p.λ],
+  },
+  {
+    name: "Gamma", discrete: false,
+    params: [
+      {name: "k", description: "Shape", default: 2.0, integer: false, min: 0, exclusive_min: true},
+      {name: "θ", description: "Scale", default: 1.0, integer: false, min: 0, exclusive_min: true},
+    ],
+    default_x: 2.0,
+    info_text: "<b>What it is:</b> Generalization of exponential. Sum of k exponentials when shape is integer.<br><br><b>When to use:</b> Total waiting time for k events, rainfall amounts, insurance claims.",
+    pdf: (x, p) => x > 0 ? J.gamma.pdf(x, p.k, p.θ) : 0,
+    cdf: (x, p) => x > 0 ? J.gamma.cdf(x, p.k, p.θ) : 0,
+    ppf: (q, p) => J.gamma.inv(q, p.k, p.θ),
+    rvs: (p, rng) => J.gamma.sample(p.k, p.θ),
+    defaultSupport: (p) => [0, (p.k + 4 * Math.sqrt(p.k)) * p.θ],
+  },
+  {
+    name: "Beta", discrete: false,
+    params: [
+      {name: "α", description: "Shape 1", default: 2.0, integer: false, min: 0, exclusive_min: true},
+      {name: "β", description: "Shape 2", default: 2.0, integer: false, min: 0, exclusive_min: true},
+    ],
+    default_x: 0.5,
+    info_text: "<b>What it is:</b> Flexible distribution on [0, 1].<br><br><b>When to use:</b> Modeling proportions, Bayesian prior for probabilities, project completion fractions.",
+    pdf: (x, p) => (x > 0 && x < 1) ? J.beta.pdf(x, p.α, p.β) : 0,
+    cdf: (x, p) => x <= 0 ? 0 : x >= 1 ? 1 : J.beta.cdf(x, p.α, p.β),
+    ppf: (q, p) => J.beta.inv(q, p.α, p.β),
+    rvs: (p, rng) => J.beta.sample(p.α, p.β),
+    defaultSupport: () => [0, 1],
+  },
+  {
+    name: "Chi-square", discrete: false,
+    params: [{name: "df", description: "Degrees of freedom", default: 5.0, integer: false, min: 0, exclusive_min: true}],
+    default_x: 5.0,
+    info_text: "<b>What it is:</b> Sum of squared independent standard normals.<br><br><b>When to use:</b> Goodness-of-fit tests, variance confidence intervals, contingency tables.",
+    pdf: (x, p) => x > 0 ? J.chisquare.pdf(x, p.df) : 0,
+    cdf: (x, p) => x > 0 ? J.chisquare.cdf(x, p.df) : 0,
+    ppf: (q, p) => J.chisquare.inv(q, p.df),
+    rvs: (p, rng) => J.chisquare.sample(p.df),
+    defaultSupport: (p) => [0, p.df + 5 * Math.sqrt(2 * p.df)],
+  },
+  {
+    name: "Student-t", discrete: false,
+    params: [{name: "df", description: "Degrees of freedom", default: 10.0, integer: false, min: 0, exclusive_min: true}],
+    default_x: 0.0,
+    info_text: "<b>What it is:</b> Symmetric around 0, fatter tails than normal. Approaches normal as df grows.<br><br><b>When to use:</b> t-tests, confidence intervals for the mean when σ is unknown.",
+    pdf: (x, p) => J.studentt.pdf(x, p.df),
+    cdf: (x, p) => J.studentt.cdf(x, p.df),
+    ppf: (q, p) => J.studentt.inv(q, p.df),
+    rvs: (p, rng) => J.studentt.sample(p.df),
+    defaultSupport: (p) => {
+      const s = p.df > 2 ? Math.sqrt(p.df / (p.df - 2)) : 5;
+      return [-4 * s, 4 * s];
+    },
+  },
+  {
+    name: "F", discrete: false,
+    params: [
+      {name: "df₁", description: "Numerator df", default: 5.0, integer: false, min: 0, exclusive_min: true},
+      {name: "df₂", description: "Denominator df", default: 10.0, integer: false, min: 0, exclusive_min: true},
+    ],
+    default_x: 1.0,
+    info_text: "<b>What it is:</b> Ratio of two scaled chi-squares.<br><br><b>When to use:</b> ANOVA, comparing two sample variances, regression overall significance tests.",
+    pdf: (x, p) => x > 0 ? J.centralF.pdf(x, p["df₁"], p["df₂"]) : 0,
+    cdf: (x, p) => x > 0 ? J.centralF.cdf(x, p["df₁"], p["df₂"]) : 0,
+    ppf: (q, p) => J.centralF.inv(q, p["df₁"], p["df₂"]),
+    rvs: (p, rng) => J.centralF.sample(p["df₁"], p["df₂"]),
+    defaultSupport: (p) => [0, 5],
+  },
+  {
+    name: "Continuous Uniform", discrete: false,
+    params: [
+      {name: "a", description: "Lower bound", default: 0.0, integer: false},
+      {name: "b", description: "Upper bound", default: 1.0, integer: false},
+    ],
+    default_x: 0.5,
+    info_text: "<b>What it is:</b> All values in [a, b] equally likely.<br><br><b>When to use:</b> A random number, baseline for simulation, uninformative continuous priors.",
+    pdf: (x, p) => (x >= p.a && x <= p.b) ? 1 / (p.b - p.a) : 0,
+    cdf: (x, p) => x < p.a ? 0 : x > p.b ? 1 : (x - p.a) / (p.b - p.a),
+    ppf: (q, p) => p.a + q * (p.b - p.a),
+    rvs: (p, rng) => p.a + rng() * (p.b - p.a),
+    defaultSupport: (p) => [p.a, p.b],
+  },
+  {
+    name: "Weibull", discrete: false,
+    params: [
+      {name: "k", description: "Shape", default: 1.5, integer: false, min: 0, exclusive_min: true},
+      {name: "λ", description: "Scale", default: 1.0, integer: false, min: 0, exclusive_min: true},
+    ],
+    default_x: 1.0,
+    info_text: "<b>What it is:</b> Flexible lifetime distribution. Shape < 1: decreasing failure rate. > 1: increasing.<br><br><b>When to use:</b> Reliability engineering, time-to-failure, extreme value modeling.",
+    pdf: (x, p) => x >= 0 ? J.weibull.pdf(x, p.λ, p.k) : 0,
+    cdf: (x, p) => x >= 0 ? J.weibull.cdf(x, p.λ, p.k) : 0,
+    ppf: (q, p) => p.λ * Math.pow(-Math.log(1 - q), 1 / p.k),
+    rvs: (p, rng) => p.λ * Math.pow(-Math.log(rng()), 1 / p.k),
+    defaultSupport: (p) => [0, p.λ * Math.pow(-Math.log(0.001), 1 / p.k)],
+  },
+];
+
+// Hypergeometric pmf (computed via logs to avoid overflow)
+function logChoose(n, k) {
+  if (k < 0 || k > n) return -Infinity;
+  return J.lgamma(n + 1) - J.lgamma(k + 1) - J.lgamma(n - k + 1);
+}
+function hypergeomPmf(k, N, K, n) {
+  if (k < Math.max(0, n - (N - K)) || k > Math.min(K, n)) return 0;
+  return Math.exp(logChoose(K, k) + logChoose(N - K, n - k) - logChoose(N, n));
+}
+
+// Box-Muller transform for normal sampling
+function boxMuller(rng) {
+  const u1 = Math.max(1e-12, rng());
+  const u2 = rng();
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+
+const BY_NAME = Object.fromEntries(DISTS.map(d => [d.name, d]));
+
+// ---------------------------------------------------------------------------
+// UI state
+// ---------------------------------------------------------------------------
+
+let currentDist = DISTS.find(d => d.name === "Standard Normal");
+let currentParams = {};
+let currentOp = "probability";
+let lastPlotData = null;
+
 const loadingEl = document.getElementById("loading");
-const loadingSubEl = document.getElementById("loading-sub");
 const uiEl = document.getElementById("ui");
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
-const t0 = Date.now();
-function elapsed() { return ((Date.now() - t0) / 1000).toFixed(1) + "s"; }
-function setStatus(msg) {
-  console.log(`[statiq +${elapsed()}]`, msg);
-  loadingSubEl.textContent = `${msg}  (${elapsed()})`;
-}
-
-async function init() {
-  try {
-    if (typeof loadPyodide !== "function") {
-      throw new Error("loadPyodide not available — pyodide.js CDN failed to load");
-    }
-    setStatus("loading Pyodide runtime (≈10 MB)…");
-    pyodide = await loadPyodide({
-      stdout: (s) => console.log("[py]", s),
-      stderr: (s) => console.error("[py]", s),
-    });
-    setStatus("Pyodide ready. Loading numpy + scipy (≈50 MB; this is the slow part)…");
-    await pyodide.loadPackage(["numpy", "scipy"], {
-      messageCallback: (m) => setStatus(`${m}`),
-      errorCallback: (m) => console.error("[load]", m),
-    });
-
-    setStatus("Loading statiq distribution module…");
-    const distRes = await fetch("distributions.py");
-    if (!distRes.ok) throw new Error(`distributions.py: HTTP ${distRes.status}`);
-    const distCode = await distRes.text();
-    pyodide.runPython(distCode);
-
-    // Define helper functions in Python
-    pyodide.runPython(`
-import json, math, numpy as np
-from scipy import optimize
-
-def list_distributions():
-    out = []
-    for d in ALL_DISTRIBUTIONS:
-        out.append({
-            "name": d.name,
-            "discrete": d.discrete,
-            "default_x": d.default_x,
-            "info_text": d.info_text,
-            "category": d.category,
-            "params": [
-                {
-                    "name": p.name,
-                    "description": p.description,
-                    "default": float(p.default),
-                    "integer": p.integer,
-                    "min_value": None if not math.isfinite(p.min_value) else p.min_value,
-                    "max_value": None if not math.isfinite(p.max_value) else p.max_value,
-                    "exclusive_min": p.exclusive_min,
-                    "exclusive_max": p.exclusive_max,
-                }
-                for p in d.params
-            ],
-        })
-    return json.dumps(out)
-
-
-def _build_rv(dist_name, params):
-    dist = BY_NAME[dist_name]
-    return dist, dist.build(dict(params), enforce_integer=False)
-
-
-def get_plot_data(dist_name, params):
-    dist, rv = _build_rv(dist_name, params)
-    try:
-        lo, hi = dist.support_range(rv)
-    except Exception:
-        lo, hi = -5.0, 5.0
-    if hi <= lo:
-        hi = lo + 1.0
-    if dist.discrete:
-        k_lo = int(math.floor(lo)) - 1
-        k_hi = int(math.ceil(hi)) + 1
-        ks = list(range(k_lo, k_hi + 1))
-        pdf = [float(v) for v in rv.pmf(np.asarray(ks))]
-        cdf = [float(v) for v in rv.cdf(np.asarray(ks))]
-    else:
-        xs = np.linspace(lo, hi, 400)
-        pdf = [float(v) for v in rv.pdf(xs)]
-        cdf = [float(v) for v in rv.cdf(xs)]
-        ks = [float(v) for v in xs]
-    return json.dumps({"discrete": dist.discrete, "x": ks, "pdf": pdf, "cdf": cdf, "lo": float(lo), "hi": float(hi)})
-
-
-def compute_probability(dist_name, params, mode, x, b=None):
-    dist, rv = _build_rv(dist_name, params)
-    if mode == "le":
-        p = float(rv.cdf(x))
-    elif mode == "lt":
-        p = float(rv.cdf(x - 1)) if dist.discrete else float(rv.cdf(x))
-    elif mode == "ge":
-        p = 1.0 - (float(rv.cdf(x - 1)) if dist.discrete else float(rv.cdf(x)))
-    elif mode == "gt":
-        p = 1.0 - float(rv.cdf(x))
-    elif mode == "eq":
-        p = float(rv.pmf(x)) if dist.discrete else 0.0
-    elif mode == "between":
-        if dist.discrete:
-            p = float(rv.cdf(b) - rv.cdf(x - 1))
-        else:
-            p = float(rv.cdf(b) - rv.cdf(x))
-    else:
-        p = float("nan")
-    return p
-
-
-def compute_quantile(dist_name, params, q):
-    dist, rv = _build_rv(dist_name, params)
-    return float(rv.ppf(q))
-
-
-def draw_sample(dist_name, params, n, seed):
-    dist, rv = _build_rv(dist_name, params)
-    s = np.atleast_1d(rv.rvs(size=n, random_state=(seed or None)))
-    if dist.discrete:
-        values = [int(v) for v in s]
-    else:
-        values = [float(v) for v in s]
-    arr = np.asarray(values, dtype=float)
-    return json.dumps({
-        "values": values,
-        "discrete": dist.discrete,
-        "mean": float(arr.mean()),
-        "sd": float(arr.std(ddof=1)) if len(arr) > 1 else 0.0,
-        "min": float(arr.min()),
-        "max": float(arr.max()),
-    })
-
-
-def solve_parameter(dist_name, params, unknown_param, x, target_p, lo, hi):
-    dist = BY_NAME[dist_name]
-    base = dict(params)
-    param_spec = next(p for p in dist.params if p.name == unknown_param)
-
-    def f(theta):
-        vals = dict(base)
-        vals[unknown_param] = theta
-        try:
-            rv = dist.build(vals, enforce_integer=False)
-            return float(rv.cdf(x)) - target_p
-        except Exception:
-            return float("nan")
-
-    mid_test = f((lo + hi) / 2)
-    need_int = param_spec.integer and math.isnan(mid_test)
-    if need_int:
-        lo_i, hi_i = int(math.ceil(lo)), int(math.floor(hi))
-        best, best_err = None, math.inf
-        for k in range(lo_i, hi_i + 1):
-            err = f(float(k))
-            if not math.isnan(err) and abs(err) < best_err:
-                best, best_err = k, abs(err)
-        if best is None:
-            raise ValueError("Keine Lösung im Suchbereich gefunden.")
-        return json.dumps({"value": float(best), "integer_search": True, "error": float(best_err)})
-    else:
-        f_lo, f_hi = f(lo), f(hi)
-        if math.isnan(f_lo) or math.isnan(f_hi):
-            raise ValueError("Suchbereich enthält ungültige Werte.")
-        if f_lo * f_hi > 0:
-            raise ValueError("Lösung liegt nicht im Suchbereich (Vorzeichen identisch).")
-        root = optimize.brentq(f, lo, hi, xtol=1e-9)
-        return json.dumps({"value": float(root), "integer_search": False})
-`);
-
-    setStatus("Building distribution metadata…");
-    const distsJson = pyodide.runPython("list_distributions()");
-    DISTS = JSON.parse(distsJson);
-    setStatus(`Ready — ${DISTS.length} distributions loaded.`);
-
-    setupUI();
-    loadingEl.hidden = true;
-    uiEl.hidden = false;
-  } catch (e) {
-    const detail = (e && e.message) ? e.message : String(e);
-    loadingSubEl.innerHTML = `<div style="color:#ff453a; max-width:600px; white-space:pre-wrap; text-align:left; font-family:monospace; font-size:0.8rem;">Failed: ${detail}</div>`;
-    console.error("[statiq init failed]", e);
+function init() {
+  if (typeof jStat === "undefined") {
+    document.getElementById("loading-sub").textContent = "Failed: jStat not loaded";
+    return;
   }
+  setupUI();
+  loadingEl.hidden = true;
+  uiEl.hidden = false;
 }
 
 // ---------------------------------------------------------------------------
-// UI Setup
+// UI setup
 // ---------------------------------------------------------------------------
 
 function setupUI() {
   const select = document.getElementById("dist-select");
-  // group by discrete/continuous
-  const discreteOptgroup = document.createElement("optgroup");
-  discreteOptgroup.label = `Discrete (${DISTS.filter(d => d.discrete).length})`;
-  const continuousOptgroup = document.createElement("optgroup");
-  continuousOptgroup.label = `Continuous (${DISTS.filter(d => !d.discrete).length})`;
+  const discreteGroup = document.createElement("optgroup");
+  discreteGroup.label = `Discrete (${DISTS.filter(d => d.discrete).length})`;
+  const continuousGroup = document.createElement("optgroup");
+  continuousGroup.label = `Continuous (${DISTS.filter(d => !d.discrete).length})`;
   for (const d of DISTS) {
     const opt = document.createElement("option");
     opt.value = d.name;
     opt.textContent = d.name;
-    (d.discrete ? discreteOptgroup : continuousOptgroup).appendChild(opt);
+    (d.discrete ? discreteGroup : continuousGroup).appendChild(opt);
   }
-  select.appendChild(discreteOptgroup);
-  select.appendChild(continuousOptgroup);
+  select.appendChild(discreteGroup);
+  select.appendChild(continuousGroup);
   select.addEventListener("change", () => selectDistribution(select.value));
 
-  // Tab buttons
   document.querySelectorAll(".tab").forEach(btn => {
     btn.addEventListener("click", () => switchOp(btn.dataset.op));
   });
 
-  // Probability panel
   document.getElementById("prob-mode").addEventListener("change", () => {
     const mode = document.getElementById("prob-mode").value;
     document.getElementById("prob-b-row").hidden = mode !== "between";
     runProbability();
   });
-  setupLinkedNumberSlider("prob-x", () => runProbability(), () => xRange());
-  setupLinkedNumberSlider("prob-b", () => runProbability(), () => xRange());
+  setupLinkedNumberSlider("prob-x", () => runProbability());
+  setupLinkedNumberSlider("prob-b", () => runProbability());
+  setupLinkedNumberSlider("quant-q", () => runQuantile());
 
-  // Quantile panel
-  setupLinkedNumberSlider("quant-q", () => runQuantile(), () => ({ lo: 0, hi: 1 }));
-
-  // Sample panel
   document.getElementById("sample-btn").addEventListener("click", runSample);
-
-  // Solve panel
   document.getElementById("solve-btn").addEventListener("click", runSolve);
 
-  // Default selection
-  selectDistribution("Normal");
+  selectDistribution("Standard Normal");
 }
 
 function switchOp(op) {
@@ -260,7 +438,7 @@ function switchOp(op) {
 // ---------------------------------------------------------------------------
 
 function selectDistribution(name) {
-  currentDist = DISTS.find(d => d.name === name);
+  currentDist = BY_NAME[name];
   document.getElementById("dist-select").value = name;
   currentParams = {};
   for (const p of currentDist.params) currentParams[p.name] = p.default;
@@ -269,14 +447,10 @@ function selectDistribution(name) {
   buildParamsUI();
   buildSolveParamSelect();
 
-  // Set default x for probability
   setNumber("prob-x", currentDist.default_x);
-  // Set b default = default_x + something
   setNumber("prob-b", currentDist.default_x + 1.0);
 
-  // Update slider ranges that depend on support
   updateProbabilitySliderRange();
-
   redrawPlot();
   if (currentOp === "probability") runProbability();
   if (currentOp === "quantile") runQuantile();
@@ -324,14 +498,16 @@ function buildSolveParamSelect() {
 
 function sliderRangeForParam(p) {
   const def = p.default;
-  if (p.min_value !== null && p.max_value !== null) return [p.min_value, p.max_value];
-  if (p.min_value !== null) {
-    const span = Math.max(Math.abs(def - p.min_value) * 3, 5);
-    return [p.min_value, p.min_value + span];
+  const has_min = p.min !== undefined && p.min !== null;
+  const has_max = p.max !== undefined && p.max !== null;
+  if (has_min && has_max) return [p.min, p.max];
+  if (has_min) {
+    const span = Math.max(Math.abs(def - p.min) * 3, 5);
+    return [p.min, p.min + span];
   }
-  if (p.max_value !== null) {
-    const span = Math.max(Math.abs(p.max_value - def) * 3, 5);
-    return [p.max_value - span, p.max_value];
+  if (has_max) {
+    const span = Math.max(Math.abs(p.max - def) * 3, 5);
+    return [p.max - span, p.max];
   }
   const span = Math.max(Math.abs(def) * 3, 5);
   return [def - span, def + span];
@@ -345,21 +521,13 @@ function onParamChange() {
 }
 
 function updateProbabilitySliderRange() {
-  const { lo, hi } = xRange();
+  const [lo, hi] = currentDist.defaultSupport(currentParams);
   rescaleSlider("prob-x", lo, hi);
   rescaleSlider("prob-b", lo, hi);
 }
 
-function xRange() {
-  // Use the current plot data range (cached)
-  if (window._lastPlotData) {
-    return { lo: window._lastPlotData.lo, hi: window._lastPlotData.hi };
-  }
-  return { lo: -5, hi: 5 };
-}
-
 // ---------------------------------------------------------------------------
-// Linked number+slider helpers
+// Linked number + slider
 // ---------------------------------------------------------------------------
 
 function linkNumSlider(numEl, sliderEl, lo, hi, integer, onChange) {
@@ -387,20 +555,19 @@ function linkNumSlider(numEl, sliderEl, lo, hi, integer, onChange) {
   }
   sliderEl.addEventListener("input", fromSlider);
   numEl.addEventListener("input", fromNum);
-  // Sync initial slider position
+  // Sync slider to initial number value without firing callbacks
   syncing = true;
-  fromNum.call();
+  const v = +numEl.value;
+  let pos = (v - lo) / (hi - lo) * SLIDER_STEPS;
+  pos = Math.max(0, Math.min(SLIDER_STEPS, pos));
+  sliderEl.value = Math.round(pos);
   syncing = false;
 }
 
-function setupLinkedNumberSlider(id, onChange, rangeFn) {
+function setupLinkedNumberSlider(id, onChange) {
   const numEl = document.getElementById(`${id}-num`);
   const sliderEl = document.getElementById(`${id}-slider`);
-  const { lo, hi } = rangeFn();
-  linkNumSlider(numEl, sliderEl, lo, hi, false, onChange);
-  // Store the rangeFn so we can rescale
-  numEl._rangeFn = rangeFn;
-  sliderEl._rangeFn = rangeFn;
+  linkNumSlider(numEl, sliderEl, -5, 5, false, onChange);
 }
 
 function rescaleSlider(id, lo, hi) {
@@ -408,7 +575,6 @@ function rescaleSlider(id, lo, hi) {
   if (!numEl) return;
   numEl._linkedRange.lo = lo;
   numEl._linkedRange.hi = hi;
-  // Re-sync slider position
   const sliderEl = document.getElementById(`${id}-slider`);
   const v = +numEl.value;
   let pos = (v - lo) / (hi - lo) * SLIDER_STEPS;
@@ -419,8 +585,7 @@ function rescaleSlider(id, lo, hi) {
 function setNumber(id, value) {
   const numEl = document.getElementById(`${id}-num`);
   if (!numEl) return;
-  numEl.value = +value.toFixed(6);
-  // Re-sync slider
+  numEl.value = +(+value).toFixed(6);
   const sliderEl = document.getElementById(`${id}-slider`);
   if (numEl._linkedRange && sliderEl) {
     let pos = (value - numEl._linkedRange.lo) / (numEl._linkedRange.hi - numEl._linkedRange.lo) * SLIDER_STEPS;
@@ -429,34 +594,51 @@ function setNumber(id, value) {
   }
 }
 
-function getNumber(id) {
-  return +document.getElementById(`${id}-num`).value;
-}
+function getNumber(id) { return +document.getElementById(`${id}-num`).value; }
 
 // ---------------------------------------------------------------------------
 // Plot
 // ---------------------------------------------------------------------------
 
-function redrawPlot(highlight = null) {
+function computePlotData() {
+  const [lo, hi] = currentDist.defaultSupport(currentParams);
+  let x, pdf, cdf;
+  if (currentDist.discrete) {
+    const kLo = Math.floor(lo);
+    const kHi = Math.ceil(hi);
+    x = [];
+    pdf = [];
+    cdf = [];
+    for (let k = kLo; k <= kHi; k++) {
+      x.push(k);
+      pdf.push(currentDist.pdf(k, currentParams));
+      cdf.push(currentDist.cdf(k, currentParams));
+    }
+  } else {
+    const N = 400;
+    x = []; pdf = []; cdf = [];
+    for (let i = 0; i < N; i++) {
+      const v = lo + (hi - lo) * i / (N - 1);
+      x.push(v);
+      pdf.push(currentDist.pdf(v, currentParams));
+      cdf.push(currentDist.cdf(v, currentParams));
+    }
+  }
+  return { x, pdf, cdf, lo, hi, discrete: currentDist.discrete };
+}
+
+function redrawPlot() {
   if (!currentDist) return;
   try {
-    const dataJson = pyodide.runPython(
-      `get_plot_data(${JSON.stringify(currentDist.name)}, ${JSON.stringify(currentParams)})`
-    );
-    const data = JSON.parse(dataJson);
-    window._lastPlotData = data;
-    drawPlotly(data, highlight);
-    // Re-rescale prob x slider to new support
-    rescaleSlider("prob-x", data.lo, data.hi);
-    rescaleSlider("prob-b", data.lo, data.hi);
+    lastPlotData = computePlotData();
+    drawPlotly(lastPlotData);
   } catch (e) {
     console.error("plot error:", e);
   }
 }
 
-function drawPlotly(data, highlight) {
-  const { x, pdf, cdf, discrete, lo, hi } = data;
-
+function drawPlotly(data) {
+  const { x, pdf, cdf, discrete } = data;
   const layoutCommon = {
     paper_bgcolor: "#1c1c1f",
     plot_bgcolor: "#1c1c1f",
@@ -468,7 +650,6 @@ function drawPlotly(data, highlight) {
     hovermode: "x unified",
   };
 
-  // PDF/PMF subplot
   let pdfTraces = [];
   let cdfTraces = [];
   if (discrete) {
@@ -479,77 +660,66 @@ function drawPlotly(data, highlight) {
     cdfTraces.push({ x, y: cdf, type: "scatter", mode: "lines", line: { color: "#319bff", width: 2 } });
   }
 
-  // Highlights based on current op
   if (currentOp === "probability") {
     const mode = document.getElementById("prob-mode").value;
     const xv = getNumber("prob-x");
     const bv = getNumber("prob-b");
-    const hi_data = highlightForProbability(mode, xv, bv, x, pdf, cdf, discrete);
-    if (hi_data) {
-      pdfTraces.push(...hi_data.pdf);
-      cdfTraces.push(...hi_data.cdf);
-    }
+    addProbabilityHighlights(pdfTraces, cdfTraces, mode, xv, bv, x, pdf, cdf, discrete);
   } else if (currentOp === "quantile") {
     const q = getNumber("quant-q");
-    const xq = pyodide.runPython(`float(_build_rv(${JSON.stringify(currentDist.name)}, ${JSON.stringify(currentParams)})[1].ppf(${q}))`);
-    const xv = +xq;
-    const hi_data = highlightForProbability("le", xv, 0, x, pdf, cdf, discrete);
-    if (hi_data) {
-      pdfTraces.push(...hi_data.pdf);
-      cdfTraces.push(...hi_data.cdf);
-    }
+    const xv = currentDist.ppf(q, currentParams);
+    addProbabilityHighlights(pdfTraces, cdfTraces, "le", xv, 0, x, pdf, cdf, discrete);
   }
 
+  const yMaxPdf = Math.max(...pdf.filter(v => isFinite(v))) * 1.1 || 1;
   Plotly.react("plot-pdf", pdfTraces, {
     ...layoutCommon,
-    title: { text: discrete ? `${currentDist.name} — PMF` : `${currentDist.name} — PDF`, font: { size: 13 } },
-    yaxis: { ...layoutCommon.yaxis, title: discrete ? "P(X = x)" : "f(x)" },
+    autosize: true,
+    title: { text: `${currentDist.name} — ${discrete ? "PMF" : "PDF"}`, font: { size: 13 } },
+    yaxis: { ...layoutCommon.yaxis, title: discrete ? "P(X = x)" : "f(x)", range: [0, yMaxPdf], fixedrange: true },
     xaxis: { ...layoutCommon.xaxis, title: "x" },
   }, { responsive: true, displayModeBar: false });
 
   Plotly.react("plot-cdf", cdfTraces, {
     ...layoutCommon,
+    autosize: true,
     title: { text: "CDF", font: { size: 13 } },
-    yaxis: { ...layoutCommon.yaxis, title: "P(X ≤ x)", range: [-0.02, 1.02] },
+    yaxis: { ...layoutCommon.yaxis, title: "P(X ≤ x)", range: [-0.02, 1.02], fixedrange: true },
     xaxis: { ...layoutCommon.xaxis, title: "x" },
   }, { responsive: true, displayModeBar: false });
 }
 
-function highlightForProbability(mode, xv, bv, x, pdf, cdf, discrete) {
-  const highlightColor = "#ff453a";
-  const highlightFill = "rgba(255,69,58,0.4)";
-  const pdfTraces = [];
-  const cdfTraces = [];
-
+function addProbabilityHighlights(pdfTraces, cdfTraces, mode, xv, bv, x, pdf, cdf, discrete) {
+  const c = "#ff453a", fill = "rgba(255,69,58,0.4)";
   function sliceFill(xLo, xHi) {
+    const idxs = [];
+    for (let i = 0; i < x.length; i++) if (x[i] >= xLo && x[i] <= xHi) idxs.push(i);
+    if (!idxs.length) return;
     if (discrete) {
-      const pts = x.map((xi, i) => ({ xi, p: pdf[i] })).filter(d => d.xi >= xLo && d.xi <= xHi);
       pdfTraces.push({
-        x: pts.map(p => p.xi),
-        y: pts.map(p => p.p),
+        x: idxs.map(i => x[i]),
+        y: idxs.map(i => pdf[i]),
         type: "bar",
-        marker: { color: highlightColor, line: { color: "#ff6961", width: 1 } },
+        marker: { color: c, line: { color: "#ff6961", width: 1 } },
       });
     } else {
-      const idxs = x.map((xi, i) => ({ xi, p: pdf[i], i })).filter(d => d.xi >= xLo && d.xi <= xHi);
       pdfTraces.push({
-        x: idxs.map(p => p.xi),
-        y: idxs.map(p => p.p),
+        x: idxs.map(i => x[i]),
+        y: idxs.map(i => pdf[i]),
         type: "scatter",
         mode: "lines",
-        line: { color: highlightColor, width: 0 },
+        line: { width: 0 },
         fill: "tozeroy",
-        fillcolor: highlightFill,
+        fillcolor: fill,
       });
     }
   }
-
   function vertical(xVal) {
-    pdfTraces.push({ x: [xVal, xVal], y: [0, Math.max(...pdf) * 1.05], type: "scatter", mode: "lines", line: { color: "#888", width: 1, dash: "dash" } });
+    const yMax = Math.max(...pdf) * 1.05;
+    pdfTraces.push({ x: [xVal, xVal], y: [0, yMax], type: "scatter", mode: "lines", line: { color: "#888", width: 1, dash: "dash" } });
     cdfTraces.push({ x: [xVal, xVal], y: [0, 1], type: "scatter", mode: "lines", line: { color: "#888", width: 1, dash: "dash" } });
-    cdfTraces.push({ x: [xVal], y: [interpCDF(xVal, x, cdf)], type: "scatter", mode: "markers", marker: { color: highlightColor, size: 8 } });
+    cdfTraces.push({ x: [xVal], y: [interpCDF(xVal, x, cdf)], type: "scatter", mode: "markers", marker: { color: c, size: 8 } });
   }
-
   if (mode === "le" || mode === "lt") {
     sliceFill(-Infinity, mode === "lt" && discrete ? xv - 1 : xv);
     vertical(xv);
@@ -563,8 +733,6 @@ function highlightForProbability(mode, xv, bv, x, pdf, cdf, discrete) {
   } else if (mode === "eq") {
     vertical(xv);
   }
-
-  return { pdf: pdfTraces, cdf: cdfTraces };
 }
 
 function interpCDF(xv, xs, cdf) {
@@ -586,10 +754,19 @@ function runProbability() {
   if (!currentDist) return;
   try {
     const mode = document.getElementById("prob-mode").value;
-    const xv = getNumber("prob-x");
-    const bv = getNumber("prob-b");
-    const args = `${JSON.stringify(currentDist.name)}, ${JSON.stringify(currentParams)}, ${JSON.stringify(mode)}, ${xv}, ${bv}`;
-    const p = +pyodide.runPython(`compute_probability(${args})`);
+    const x = getNumber("prob-x");
+    const b = getNumber("prob-b");
+    let p;
+    if (mode === "le") p = currentDist.cdf(x, currentParams);
+    else if (mode === "lt") p = currentDist.discrete ? currentDist.cdf(x - 1, currentParams) : currentDist.cdf(x, currentParams);
+    else if (mode === "ge") p = 1 - (currentDist.discrete ? currentDist.cdf(x - 1, currentParams) : currentDist.cdf(x, currentParams));
+    else if (mode === "gt") p = 1 - currentDist.cdf(x, currentParams);
+    else if (mode === "eq") p = currentDist.discrete ? currentDist.pdf(x, currentParams) : 0;
+    else if (mode === "between") {
+      p = currentDist.discrete
+        ? currentDist.cdf(b, currentParams) - currentDist.cdf(x - 1, currentParams)
+        : currentDist.cdf(b, currentParams) - currentDist.cdf(x, currentParams);
+    }
     document.getElementById("prob-result").textContent = p.toFixed(6);
     redrawPlot();
   } catch (e) {
@@ -602,8 +779,8 @@ function runQuantile() {
   if (!currentDist) return;
   try {
     const q = getNumber("quant-q");
-    const x = +pyodide.runPython(`compute_quantile(${JSON.stringify(currentDist.name)}, ${JSON.stringify(currentParams)}, ${q})`);
-    document.getElementById("quant-result").textContent = currentDist.discrete ? String(Math.round(x)) : x.toFixed(6);
+    const x = currentDist.ppf(q, currentParams);
+    document.getElementById("quant-result").textContent = currentDist.discrete ? String(Math.round(x)) : (+x).toFixed(6);
     redrawPlot();
   } catch (e) {
     document.getElementById("quant-result").textContent = "error";
@@ -614,20 +791,26 @@ function runQuantile() {
 function runSample() {
   if (!currentDist) return;
   try {
-    const n = +document.getElementById("sample-n").value;
+    const n = Math.max(1, Math.min(10000, +document.getElementById("sample-n").value));
     const seed = +document.getElementById("sample-seed").value;
-    const json = pyodide.runPython(`draw_sample(${JSON.stringify(currentDist.name)}, ${JSON.stringify(currentParams)}, ${n}, ${seed})`);
-    const r = JSON.parse(json);
-    const out = r.discrete ? r.values.join(", ") : r.values.map(v => v.toFixed(4)).join(", ");
+    const rng = makeRng(seed);
+    const samples = [];
+    for (let i = 0; i < n; i++) samples.push(currentDist.rvs(currentParams, rng));
+    const out = currentDist.discrete ? samples.join(", ") : samples.map(v => v.toFixed(4)).join(", ");
     document.getElementById("sample-output").textContent = out;
+    const mean = samples.reduce((a, b) => a + b, 0) / n;
+    const variance = n > 1 ? samples.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1) : 0;
+    const sd = Math.sqrt(variance);
+    const min = Math.min(...samples);
+    const max = Math.max(...samples);
     document.getElementById("sample-stats").innerHTML = `
-      <div><span>Mean</span><b>${r.mean.toFixed(4)}</b></div>
-      <div><span>SD</span><b>${r.sd.toFixed(4)}</b></div>
-      <div><span>Min</span><b>${r.min.toFixed(4)}</b></div>
-      <div><span>Max</span><b>${r.max.toFixed(4)}</b></div>
+      <div><span>Mean</span><b>${mean.toFixed(4)}</b></div>
+      <div><span>SD</span><b>${sd.toFixed(4)}</b></div>
+      <div><span>Min</span><b>${min.toFixed(4)}</b></div>
+      <div><span>Max</span><b>${max.toFixed(4)}</b></div>
     `;
   } catch (e) {
-    document.getElementById("sample-output").textContent = `error: ${e.message || e}`;
+    document.getElementById("sample-output").textContent = `error: ${e.message}`;
     console.error(e);
   }
 }
@@ -635,30 +818,51 @@ function runSample() {
 function runSolve() {
   if (!currentDist) return;
   const resultEl = document.getElementById("solve-result");
+  const panel = document.querySelector('.op-panel[data-op="solve"]');
+  panel.querySelectorAll(".error").forEach(n => n.remove());
   try {
-    const param = document.getElementById("solve-param").value;
+    if (currentDist.params.length === 0) {
+      resultEl.textContent = "(no parameters)";
+      return;
+    }
+    const unknown = document.getElementById("solve-param").value;
     const xv = +document.getElementById("solve-x").value;
-    const tp = +document.getElementById("solve-p").value;
+    const targetP = +document.getElementById("solve-p").value;
     const lo = +document.getElementById("solve-lo").value;
     const hi = +document.getElementById("solve-hi").value;
-    const json = pyodide.runPython(
-      `solve_parameter(${JSON.stringify(currentDist.name)}, ${JSON.stringify(currentParams)}, ${JSON.stringify(param)}, ${xv}, ${tp}, ${lo}, ${hi})`
-    );
-    const r = JSON.parse(json);
-    if (r.integer_search) {
-      resultEl.textContent = `${param} = ${r.value}  (Δ=${r.error.toExponential(2)})`;
+    const paramSpec = currentDist.params.find(p => p.name === unknown);
+
+    const f = (theta) => {
+      const vals = { ...currentParams, [unknown]: theta };
+      try {
+        return currentDist.cdf(xv, vals) - targetP;
+      } catch {
+        return NaN;
+      }
+    };
+
+    let root;
+    let intMode = false;
+    if (paramSpec.integer) {
+      const loI = Math.ceil(lo), hiI = Math.floor(hi);
+      let best = null, bestErr = Infinity;
+      for (let k = loI; k <= hiI; k++) {
+        const err = f(k);
+        if (!isNaN(err) && Math.abs(err) < bestErr) { best = k; bestErr = Math.abs(err); }
+      }
+      if (best === null) throw new Error("No solution found in integer search range.");
+      root = best;
+      intMode = true;
+      resultEl.textContent = `${unknown} = ${root}  (Δ=${bestErr.toExponential(2)})`;
     } else {
-      resultEl.textContent = `${param} = ${r.value.toFixed(6)}`;
+      root = findRoot(f, lo, hi);
+      resultEl.textContent = `${unknown} = ${root.toFixed(6)}`;
     }
   } catch (e) {
-    resultEl.textContent = "error";
-    const errMsg = e.message || String(e);
-    // Show a tooltip-like message
+    resultEl.textContent = "—";
     const note = document.createElement("div");
     note.className = "error";
-    note.textContent = errMsg.split("\n").filter(l => l.includes("ValueError") || l.includes("error")).pop() || errMsg;
-    const panel = document.querySelector('.op-panel[data-op="solve"]');
-    panel.querySelectorAll(".error").forEach(n => n.remove());
+    note.textContent = e.message || String(e);
     panel.appendChild(note);
     console.error(e);
   }
