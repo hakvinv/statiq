@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>statiq — interactive statistical distribution explorer</title>
+<meta name="description" content="32 probability distributions with live plots, parameter sliders, and four operations: probability, quantile, random sample, parameter solver. Runs in your browser via Pyodide.">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js"></script>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <h1>statiq</h1>
+    <p class="tagline">interactive statistical distribution explorer</p>
+    <p class="lede">
+      32 probability distributions, live plots, sliders for every parameter.
+      Compute probabilities, quantiles, random samples — or solve for any unknown parameter.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#app">Try it online</a>
+      <a class="btn btn-secondary" href="#download">Download for Mac</a>
+      <a class="btn btn-ghost" href="https://github.com/hakvinv/statiq" target="_blank" rel="noopener">View source on GitHub</a>
+    </div>
+  </div>
+</header>
+
+<section id="app" class="app-section">
+
+  <div id="loading" class="loading">
+    <div class="spinner"></div>
+    <div class="loading-text">Loading Python + scipy in the browser…</div>
+    <div class="loading-sub" id="loading-sub">first load may take a few seconds (cached afterwards)</div>
+  </div>
+
+  <div id="ui" class="ui" hidden>
+
+    <aside class="sidebar">
+      <label class="field">
+        <span class="label-text">Distribution</span>
+        <select id="dist-select"></select>
+      </label>
+      <div id="dist-info" class="dist-info"></div>
+    </aside>
+
+    <main class="controls">
+
+      <section class="card">
+        <h3>Parameters</h3>
+        <div id="params"></div>
+      </section>
+
+      <section class="card">
+        <h3>Operation</h3>
+        <nav class="tabs">
+          <button class="tab active" data-op="probability">Probability</button>
+          <button class="tab" data-op="quantile">Quantile</button>
+          <button class="tab" data-op="sample">Random sample</button>
+          <button class="tab" data-op="solve">Solve for parameter</button>
+        </nav>
+
+        <div class="op-panel" data-op="probability">
+          <label class="field">
+            <span class="label-text">Event</span>
+            <select id="prob-mode">
+              <option value="le">P(X ≤ x)</option>
+              <option value="lt">P(X &lt; x)</option>
+              <option value="ge">P(X ≥ x)</option>
+              <option value="gt">P(X &gt; x)</option>
+              <option value="eq">P(X = x)</option>
+              <option value="between">P(a ≤ X ≤ b)</option>
+            </select>
+          </label>
+          <div class="slider-row" id="prob-x-row">
+            <span class="slider-label">x</span>
+            <input type="number" id="prob-x-num" step="any">
+            <input type="range" id="prob-x-slider" min="0" max="1000" value="500">
+          </div>
+          <div class="slider-row" id="prob-b-row" hidden>
+            <span class="slider-label">b</span>
+            <input type="number" id="prob-b-num" step="any">
+            <input type="range" id="prob-b-slider" min="0" max="1000" value="700">
+          </div>
+          <div class="result-row">
+            <span class="result-label">Result</span>
+            <span class="result-value" id="prob-result">—</span>
+          </div>
+        </div>
+
+        <div class="op-panel" data-op="quantile" hidden>
+          <div class="slider-row">
+            <span class="slider-label">q</span>
+            <input type="number" id="quant-q-num" step="0.001" min="0" max="1" value="0.95">
+            <input type="range" id="quant-q-slider" min="0" max="1000" value="950">
+          </div>
+          <p class="hint">smallest x with P(X ≤ x) ≥ q</p>
+          <div class="result-row">
+            <span class="result-label">x</span>
+            <span class="result-value" id="quant-result">—</span>
+          </div>
+        </div>
+
+        <div class="op-panel" data-op="sample" hidden>
+          <label class="field">
+            <span class="label-text">Sample size n</span>
+            <input type="number" id="sample-n" min="1" max="10000" value="20">
+          </label>
+          <label class="field">
+            <span class="label-text">Seed (0 = random)</span>
+            <input type="number" id="sample-seed" min="0" value="0">
+          </label>
+          <button class="btn btn-primary" id="sample-btn">Draw</button>
+          <pre class="sample-output" id="sample-output"></pre>
+          <div class="stat-grid" id="sample-stats"></div>
+        </div>
+
+        <div class="op-panel" data-op="solve" hidden>
+          <label class="field">
+            <span class="label-text">Unknown parameter</span>
+            <select id="solve-param"></select>
+          </label>
+          <div class="slider-row">
+            <span class="slider-label">x</span>
+            <input type="number" id="solve-x" step="any" value="0">
+          </div>
+          <div class="slider-row">
+            <span class="slider-label">P(X ≤ x)</span>
+            <input type="number" id="solve-p" step="0.01" min="0" max="1" value="0.95">
+          </div>
+          <div class="slider-row">
+            <span class="slider-label">search min</span>
+            <input type="number" id="solve-lo" step="any" value="0.001">
+          </div>
+          <div class="slider-row">
+            <span class="slider-label">search max</span>
+            <input type="number" id="solve-hi" step="any" value="100">
+          </div>
+          <button class="btn btn-primary" id="solve-btn">Solve</button>
+          <div class="result-row">
+            <span class="result-label">Result</span>
+            <span class="result-value" id="solve-result">—</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <section class="plot-area">
+      <div id="plot-pdf" class="plot"></div>
+      <div id="plot-cdf" class="plot"></div>
+    </section>
+
+  </div>
+</section>
+
+<section id="download" class="download-section">
+  <div class="download-inner">
+    <h2>Get the desktop version</h2>
+    <p>
+      Same 32 distributions, native macOS window — useful when you want to keep statiq open
+      next to your other tools, or work offline.
+    </p>
+    <div class="download-options">
+      <a class="btn btn-primary" href="https://github.com/hakvinv/statiq/releases/latest/download/statiq-mac.zip">Download statiq for Mac</a>
+      <a class="btn btn-ghost" href="https://github.com/hakvinv/statiq#installation" target="_blank" rel="noopener">Install instructions</a>
+    </div>
+    <details class="quickstart">
+      <summary>Quick start (terminal)</summary>
+      <pre><code>git clone https://github.com/hakvinv/statiq.git
+cd statiq
+./statiq.command</code></pre>
+      <p class="hint">The <code>.command</code> launcher creates a Python virtual environment on first run and installs PyQt6, scipy, numpy and matplotlib (~120 MB).</p>
+    </details>
+  </div>
+</section>
+
+<footer class="footer">
+  <p>
+    <a href="https://github.com/hakvinv/statiq">github.com/hakvinv/statiq</a>
+    · GPL v3
+    · Powered by <a href="https://pyodide.org" target="_blank" rel="noopener">Pyodide</a>, scipy, Plotly.
+  </p>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
