@@ -6,6 +6,8 @@ statiq is an interactive distribution explorer for actually *understanding* prob
 
 **Try it in the browser (no install): → [hakvinv.github.io/statiq](https://hakvinv.github.io/statiq/)**
 
+![statiq — Standard Normal, P(X ≤ 0) with live PDF and CDF](screenshot.png)
+
 ## Why I built it
 
 Statistics courses assume you'll use SPSS/PQRS-style software — which meant Windows. I wanted to learn the *concepts* on my Mac: what happens to the normal curve when σ grows, where the quantile of a t-distribution actually sits, how the binomial converges to the normal. So I built the tool I wished existed: fast, visual, and honest about the math underneath (everything is computed with `scipy.stats`, no hidden tables).
