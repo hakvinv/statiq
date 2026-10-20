@@ -630,6 +630,10 @@ class MainWindow(QMainWindow):
         center = QWidget()
         center_layout = QVBoxLayout(center)
 
+        from quickcalc import QuickCalcBar
+        self.quick_calc = QuickCalcBar(self)
+        center_layout.addWidget(self.quick_calc)
+
         # --- Info Box & Learning Mode ---
         self.learning_mode_check = QCheckBox("📖 Learning Mode")
         self.learning_mode_check.setStyleSheet("font-weight: bold; color: #0A84FF; margin-bottom: 5px;")
@@ -799,6 +803,42 @@ class MainWindow(QMainWindow):
             self.canvas.plot(self.current_dist, rv, highlight)
         except Exception as e:
             self.show_error(e)
+
+    def apply_command(self, cmd: dict, select_only: bool = False):
+        """Reflect a quick-calc command in the explorer UI."""
+        from distributions import BY_NAME
+        dist = BY_NAME[cmd["dist_name"]]
+        target = self.discrete_list if dist.discrete else self.continuous_list
+        for i in range(target.count()):
+            if target.item(i).text() == dist.name:
+                target.setCurrentRow(i)
+                break
+        for name, value in cmd["params"].items():
+            ed = self.param_editor.editors.get(name)
+            if ed is not None:
+                ed.setValue(value)
+        if select_only or cmd.get("op") is None:
+            return
+        if cmd["op"] == "quant":
+            self.op_tabs.setCurrentWidget(self.quant_panel)
+            self.quant_panel.q_edit.setValue(cmd["value"])
+            self.quant_panel.compute()
+        else:
+            self.op_tabs.setCurrentWidget(self.prob_panel)
+            mode = (cmd.get("event") or {}).get("mode")
+            index = {"le": 0, "lt": 1, "ge": 2, "gt": 3, "eq": 4}.get(mode)
+            if index is None:
+                index = 4 if cmd["op"] == "pmf" else (3 if cmd["op"] == "sf" and dist.discrete else (2 if cmd["op"] == "sf" else 0))
+            self.prob_panel.mode.setCurrentIndex(index)
+            self.prob_panel.x_edit.setValue(cmd["value"])
+            self.prob_panel.compute()
+
+    def keyPressEvent(self, event):
+        if event.text() == "/" and not isinstance(self.focusWidget(), (QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox)):
+            self.quick_calc.input.setFocus()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def show_error(self, e: Exception):
         import traceback

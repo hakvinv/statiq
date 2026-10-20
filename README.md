@@ -20,6 +20,8 @@ Statistics courses assume you'll use SPSS/PQRS-style software — which meant Wi
 - **Quantile finder** — drag or type, see the critical value and both tails
 - **Sampling simulator** — draw samples and watch the empirical histogram converge to the theoretical density (central limit theorem, made visible)
 - **Solve-for-parameter mode** — hold a target probability or quantile fixed and solve the distribution parameter backwards
+- **Quick calc command bar** — PQRS-style speed, no dialogs: `norm cdf 1.96` → `P(X ≤ 1.96) = 0.975002` instantly. Also `binom P(X>=2) n=10 p=.5`, `t quant .975 df=20`, `pois pmf 2 lambda=4`. Press `/` and type.
+- **Distribution tables** — `norm table` gives you the classic textbook-style table (x, f(x), F(x)), copyable for problem sets
 - **Honest math** — all values from `scipy.stats`; exact null distributions for the Wilcoxon and Mann-Whitney statistics instead of asymptotic approximations
 
 ## Desktop app (macOS / Linux / Windows)

@@ -47,6 +47,26 @@
 
     <main class="controls">
 
+      <section class="card cmd-card">
+        <h3>Quick calc</h3>
+        <div class="cmd-row">
+          <input id="cmd-input" type="text"
+                 placeholder="norm cdf 1.96  ·  binom P(X<=3) n=10 p=.5  ·  t quant .975 df=20  ·  chi2 table df=5"
+                 autocomplete="off" autocapitalize="off" spellcheck="false">
+          <button class="btn btn-primary" id="cmd-run">Run</button>
+        </div>
+        <div class="cmd-result" id="cmd-result">
+          <span class="hint">Number first: type a command, hit Enter. <code>norm cdf 1.96</code> · <code>binom cdf 3 n=10 p=.5</code> · <code>t quant .975 df=20</code> · <code>norm table</code>. Press <kbd>/</kbd> to focus.</span>
+        </div>
+        <div class="cmd-table-wrap" id="cmd-table-wrap" hidden>
+          <div class="cmd-table-head">
+            <span id="cmd-table-title"></span>
+            <button class="btn btn-ghost btn-small" id="cmd-table-copy">Copy</button>
+          </div>
+          <div class="cmd-table" id="cmd-table"></div>
+        </div>
+      </section>
+
       <section class="card">
         <h3>Parameters</h3>
         <div id="params"></div>
@@ -185,5 +205,6 @@ cd statiq
 </footer>
 
 <script src="app.js" defer></script>
+<script src="quickcalc.js" defer></script>
 </body>
 </html>
