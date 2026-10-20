@@ -47,25 +47,7 @@
 
     <main class="controls">
 
-      <section class="card cmd-card">
-        <h3>Quick calc</h3>
-        <div class="cmd-row">
-          <input id="cmd-input" type="text"
-                 placeholder="norm cdf 1.96  ·  binom P(X<=3) n=10 p=.5  ·  t quant .975 df=20  ·  chi2 table df=5"
-                 autocomplete="off" autocapitalize="off" spellcheck="false">
-          <button class="btn btn-primary" id="cmd-run">Run</button>
-        </div>
-        <div class="cmd-result" id="cmd-result">
-          <span class="hint">Number first: type a command, hit Enter. <code>norm cdf 1.96</code> · <code>binom cdf 3 n=10 p=.5</code> · <code>t quant .975 df=20</code> · <code>norm table</code>. Press <kbd>/</kbd> to focus.</span>
-        </div>
-        <div class="cmd-table-wrap" id="cmd-table-wrap" hidden>
-          <div class="cmd-table-head">
-            <span id="cmd-table-title"></span>
-            <button class="btn btn-ghost btn-small" id="cmd-table-copy">Copy</button>
-          </div>
-          <div class="cmd-table" id="cmd-table"></div>
-        </div>
-      </section>
+
 
       <section class="card">
         <h3>Parameters</h3>
@@ -82,30 +64,40 @@
         </nav>
 
         <div class="op-panel" data-op="probability">
-          <label class="field">
-            <span class="label-text">Event</span>
-            <select id="prob-mode">
-              <option value="le">P(X ≤ x)</option>
-              <option value="lt">P(X &lt; x)</option>
-              <option value="ge">P(X ≥ x)</option>
-              <option value="gt">P(X &gt; x)</option>
-              <option value="eq">P(X = x)</option>
-              <option value="between">P(a ≤ X ≤ b)</option>
-            </select>
-          </label>
-          <div class="slider-row" id="prob-x-row">
-            <span class="slider-label">x</span>
-            <input type="number" id="prob-x-num" step="any">
+          <div class="pqrs-row">
+            <div class="pqrs-field">
+              <input type="number" id="prob-ple-num" step="0.000001" min="0" max="1" value="0.5">
+              <span class="pqrs-caption">P(X ≤ x)</span>
+            </div>
+            <button class="arrow-btn" id="prob-arrow-left" title="x verkleinern">◀</button>
+            <div class="pqrs-field pqrs-x">
+              <input type="number" id="prob-x-num2" step="any" value="0">
+              <span class="pqrs-caption">x</span>
+            </div>
+            <button class="arrow-btn" id="prob-arrow-right" title="x vergrößern">▶</button>
+            <div class="pqrs-field">
+              <input type="number" id="prob-pgt-num" step="0.000001" min="0" max="1" value="0.5">
+              <span class="pqrs-caption">P(X &gt; x)</span>
+            </div>
+          </div>
+          <div class="slider-row" id="prob-x-slider-row">
             <input type="range" id="prob-x-slider" min="0" max="1000" value="500">
           </div>
-          <div class="slider-row" id="prob-b-row" hidden>
-            <span class="slider-label">b</span>
-            <input type="number" id="prob-b-num" step="any">
-            <input type="range" id="prob-b-slider" min="0" max="1000" value="700">
-          </div>
-          <div class="result-row">
-            <span class="result-label">Result</span>
-            <span class="result-value" id="prob-result">—</span>
+          <div class="pqrs-advanced">
+            <label class="field inline">
+              <span class="label-text">Event</span>
+              <select id="prob-mode">
+                <option value="pqrs">P(X ≤ x) / P(X &gt; x) — classic</option>
+                <option value="lt">P(X &lt; x)</option>
+                <option value="ge">P(X ≥ x)</option>
+                <option value="gt">P(X &gt; x)</option>
+                <option value="eq">P(X = x)</option>
+                <option value="between">P(a ≤ X ≤ b)</option>
+              </select>
+            </label>
+            <span class="slider-label" id="prob-b-label" hidden>b</span>
+            <input type="number" id="prob-b-num" step="any" hidden>
+            <span class="result-value" id="prob-adv-result"></span>
           </div>
         </div>
 
@@ -164,11 +156,35 @@
           </div>
         </div>
       </section>
+      <details class="card cmd-card">
+        <summary>Quick calc (command line) — optional</summary>
+        <div class="cmd-row">
+          <input id="cmd-input" type="text"
+                 placeholder="norm cdf 1.96  ·  binom P(X<=3) n=10 p=.5  ·  t quant .975 df=20  ·  chi2 table df=5"
+                 autocomplete="off" autocapitalize="off" spellcheck="false">
+          <button class="btn btn-primary" id="cmd-run">Run</button>
+        </div>
+        <div class="cmd-result" id="cmd-result">
+          <span class="hint">Number first: type a command, hit Enter. <code>norm cdf 1.96</code> · <code>binom cdf 3 n=10 p=.5</code> · <code>t quant .975 df=20</code> · <code>norm table</code>. Press <kbd>/</kbd> to focus.</span>
+        </div>
+        <div class="cmd-table-wrap" id="cmd-table-wrap" hidden>
+          <div class="cmd-table-head">
+            <span id="cmd-table-title"></span>
+            <button class="btn btn-ghost btn-small" id="cmd-table-copy">Copy</button>
+          </div>
+          <div class="cmd-table" id="cmd-table"></div>
+        </div>
+      </details>
+
     </main>
 
     <section class="plot-area">
+      <nav class="tabs plot-tabs">
+        <button class="tab active" data-plot="pdf">pdf</button>
+        <button class="tab" data-plot="cdf">cdf</button>
+      </nav>
       <div id="plot-pdf" class="plot"></div>
-      <div id="plot-cdf" class="plot"></div>
+      <div id="plot-cdf" class="plot" hidden></div>
     </section>
 
   </div>

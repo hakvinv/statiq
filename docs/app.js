@@ -409,14 +409,32 @@ function setupUI() {
     btn.addEventListener("click", () => switchOp(btn.dataset.op));
   });
 
+  // PQRS classic row: [P(X≤x)] [←] [x] [→] [P(X>x)] — any field leads, others follow.
+  document.getElementById("prob-ple-num").addEventListener("change", () => pqrsSyncFromPle(+document.getElementById("prob-ple-num").value));
+  document.getElementById("prob-pgt-num").addEventListener("change", () => pqrsSyncFromPgt(+document.getElementById("prob-pgt-num").value));
+  document.getElementById("prob-x-num2").addEventListener("change", () => pqrsSyncFromX(+document.getElementById("prob-x-num2").value));
+  document.getElementById("prob-arrow-left").addEventListener("click", () => pqrsStep(-1));
+  document.getElementById("prob-arrow-right").addEventListener("click", () => pqrsStep(+1));
+  document.getElementById("prob-x-slider").addEventListener("input", () => {
+    const { lo, hi } = probXRange();
+    pqrsSyncFromX(lo + (+document.getElementById("prob-x-slider").value / SLIDER_STEPS) * (hi - lo), true);
+  });
   document.getElementById("prob-mode").addEventListener("change", () => {
     const mode = document.getElementById("prob-mode").value;
-    document.getElementById("prob-b-row").hidden = mode !== "between";
-    runProbability();
+    document.getElementById("prob-b-label").hidden = mode !== "between";
+    document.getElementById("prob-b-num").hidden = mode !== "between";
+    if (mode === "pqrs") pqrsSyncFromX(+document.getElementById("prob-x-num2").value);
+    else runProbability();
   });
-  setupLinkedNumberSlider("prob-x", () => runProbability());
-  setupLinkedNumberSlider("prob-b", () => runProbability());
   setupLinkedNumberSlider("quant-q", () => runQuantile());
+
+  document.querySelectorAll(".plot-tabs .tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".plot-tabs .tab").forEach(b => b.classList.toggle("active", b === btn));
+      document.getElementById("plot-pdf").hidden = btn.dataset.plot !== "pdf";
+      document.getElementById("plot-cdf").hidden = btn.dataset.plot !== "cdf";
+    });
+  });
 
   document.getElementById("sample-btn").addEventListener("click", runSample);
   document.getElementById("solve-btn").addEventListener("click", runSolve);
@@ -447,12 +465,15 @@ function selectDistribution(name) {
   buildParamsUI();
   buildSolveParamSelect();
 
-  setNumber("prob-x", currentDist.default_x);
-  setNumber("prob-b", currentDist.default_x + 1.0);
+  document.getElementById("prob-x-num2").value = (+currentDist.default_x).toFixed(6);
+  document.getElementById("prob-b-num").value = (+currentDist.default_x + 1.0).toFixed(6);
 
   updateProbabilitySliderRange();
   redrawPlot();
-  if (currentOp === "probability") runProbability();
+  if (currentOp === "probability") {
+    if (document.getElementById("prob-mode").value === "pqrs") pqrsSyncFromX(currentDist.default_x);
+    else runProbability();
+  }
   if (currentOp === "quantile") runQuantile();
 }
 
@@ -520,10 +541,17 @@ function onParamChange() {
   else if (currentOp === "quantile") runQuantile();
 }
 
-function updateProbabilitySliderRange() {
+function probXRange() {
   const [lo, hi] = currentDist.defaultSupport(currentParams);
-  rescaleSlider("prob-x", lo, hi);
-  rescaleSlider("prob-b", lo, hi);
+  return { lo, hi };
+}
+
+function updateProbabilitySliderRange() {
+  const { lo, hi } = probXRange();
+  const slider = document.getElementById("prob-x-slider");
+  slider._range = { lo, hi };
+  const xv = +document.getElementById("prob-x-num2").value;
+  slider.value = Math.round(Math.max(0, Math.min(SLIDER_STEPS, (xv - lo) / (hi - lo) * SLIDER_STEPS)));
 }
 
 // ---------------------------------------------------------------------------
@@ -583,7 +611,7 @@ function rescaleSlider(id, lo, hi) {
 }
 
 function setNumber(id, value) {
-  const numEl = document.getElementById(`${id}-num`);
+  const numEl = document.getElementById(`${id}-num`) || document.getElementById(`${id}-num2`);
   if (!numEl) return;
   numEl.value = +(+value).toFixed(6);
   const sliderEl = document.getElementById(`${id}-slider`);
@@ -594,7 +622,10 @@ function setNumber(id, value) {
   }
 }
 
-function getNumber(id) { return +document.getElementById(`${id}-num`).value; }
+function getNumber(id) {
+  const el = document.getElementById(`${id}-num`) || document.getElementById(`${id}-num2`);
+  return +el.value;
+}
 
 // ---------------------------------------------------------------------------
 // Plot
@@ -661,9 +692,10 @@ function drawPlotly(data) {
   }
 
   if (currentOp === "probability") {
-    const mode = document.getElementById("prob-mode").value;
-    const xv = getNumber("prob-x");
-    const bv = getNumber("prob-b");
+    const modeSel = document.getElementById("prob-mode").value;
+    const mode = modeSel === "pqrs" ? "le" : modeSel;
+    const xv = +document.getElementById("prob-x-num2").value;
+    const bv = +document.getElementById("prob-b-num").value;
     addProbabilityHighlights(pdfTraces, cdfTraces, mode, xv, bv, x, pdf, cdf, discrete);
   } else if (currentOp === "quantile") {
     const q = getNumber("quant-q");
@@ -750,15 +782,53 @@ function interpCDF(xv, xs, cdf) {
 // Operations
 // ---------------------------------------------------------------------------
 
+// --- PQRS classic row: P(X≤x) and P(X>x) flank the x field; edit any, the rest follows.
+
+function pqrsSetFields(ple, pgt, x) {
+  document.getElementById("prob-ple-num").value = (+ple).toFixed(6);
+  document.getElementById("prob-pgt-num").value = (+pgt).toFixed(6);
+  document.getElementById("prob-x-num2").value = currentDist.discrete ? String(Math.round(x)) : (+x).toFixed(6);
+  const slider = document.getElementById("prob-x-slider");
+  const { lo, hi } = probXRange();
+  slider.value = Math.round(Math.max(0, Math.min(SLIDER_STEPS, (x - lo) / (hi - lo) * SLIDER_STEPS)));
+}
+
+function pqrsSyncFromX(x, fromSlider) {
+  if (!currentDist || isNaN(x)) return;
+  const ple = currentDist.cdf(x, currentParams);
+  pqrsSetFields(ple, 1 - ple, x);
+  redrawPlot();
+}
+
+function pqrsSyncFromPle(p) {
+  if (!currentDist || isNaN(p) || p < 0 || p > 1) return;
+  const x = currentDist.ppf(p, currentParams);
+  pqrsSetFields(p, 1 - p, x);
+  redrawPlot();
+}
+
+function pqrsSyncFromPgt(p) {
+  pqrsSyncFromPle(1 - p);
+}
+
+function pqrsStep(direction) {
+  const step = currentDist.discrete ? 1 : (() => {
+    const { lo, hi } = probXRange();
+    return Math.max((hi - lo) / 200, 0.01);
+  })();
+  const x = +document.getElementById("prob-x-num2").value + direction * step;
+  pqrsSyncFromX(x);
+}
+
 function runProbability() {
   if (!currentDist) return;
   try {
     const mode = document.getElementById("prob-mode").value;
+    if (mode === "pqrs") { pqrsSyncFromX(+document.getElementById("prob-x-num2").value); return; }
     const x = getNumber("prob-x");
-    const b = getNumber("prob-b");
+    const b = +document.getElementById("prob-b-num").value;
     let p;
-    if (mode === "le") p = currentDist.cdf(x, currentParams);
-    else if (mode === "lt") p = currentDist.discrete ? currentDist.cdf(x - 1, currentParams) : currentDist.cdf(x, currentParams);
+    if (mode === "lt") p = currentDist.discrete ? currentDist.cdf(x - 1, currentParams) : currentDist.cdf(x, currentParams);
     else if (mode === "ge") p = 1 - (currentDist.discrete ? currentDist.cdf(x - 1, currentParams) : currentDist.cdf(x, currentParams));
     else if (mode === "gt") p = 1 - currentDist.cdf(x, currentParams);
     else if (mode === "eq") p = currentDist.discrete ? currentDist.pdf(x, currentParams) : 0;
@@ -766,11 +836,13 @@ function runProbability() {
       p = currentDist.discrete
         ? currentDist.cdf(b, currentParams) - currentDist.cdf(x - 1, currentParams)
         : currentDist.cdf(b, currentParams) - currentDist.cdf(x, currentParams);
+    } else {
+      p = currentDist.cdf(x, currentParams);
     }
-    document.getElementById("prob-result").textContent = p.toFixed(6);
+    document.getElementById("prob-adv-result").textContent = p.toFixed(6);
     redrawPlot();
   } catch (e) {
-    document.getElementById("prob-result").textContent = "error";
+    document.getElementById("prob-adv-result").textContent = "error";
     console.error(e);
   }
 }

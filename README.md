@@ -4,6 +4,8 @@
 
 statiq is an interactive distribution explorer for actually *understanding* probability — not just clicking through a menu in a stats program. Pick a distribution, drag the parameters, and watch the pdf, cdf and quantiles react in real time. Every distribution ships with a plain-language explanation of what it is and when you'd use it.
 
+**Operates 1:1 like the classic PQRS tool**: the density plot with its split area is the hero — below it the row `P(X ≤ x)  ◀  x  ▶  P(X > x)`. Type into **any** of the three fields (or use the arrows) and the others follow instantly. pdf/cdf tabs, parameters above, done. No dialogs between you and the number.
+
 **Try it in the browser (no install): → [hakvinv.github.io/statiq](https://hakvinv.github.io/statiq/)**
 
 ![statiq — Standard Normal, P(X ≤ 0) with live PDF and CDF](screenshot.png)

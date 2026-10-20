@@ -287,16 +287,74 @@ class ParamEditor(QWidget):
 # ---------------------------------------------------------------------------
 
 class ProbabilityPanel(QWidget):
-    """Computes probabilities for various event types."""
+    """PQRS-style probability row: P(X≤x) [←] x [→] P(X>x) — edit any, the rest follows."""
 
     def __init__(self, main):
         super().__init__()
         self.main = main
-        layout = QFormLayout(self)
+        self._syncing = False
+        layout = QVBoxLayout(self)
 
+        # --- classic PQRS row ---
+        row = QHBoxLayout()
+        row.addStretch(1)
+        ple_box = QVBoxLayout()
+        self.ple_edit = QDoubleSpinBox()
+        self.ple_edit.setDecimals(6); self.ple_edit.setRange(0.0, 1.0); self.ple_edit.setValue(0.5)
+        self.ple_edit.setSingleStep(0.01)
+        self.ple_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ple_edit.setStyleSheet("font-size: 18px; font-weight: bold;")
+        self.ple_edit.editingFinished.connect(lambda: self.sync_from_ple(self.ple_edit.value()))
+        ple_cap = QLabel("P(X ≤ x)"); ple_cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ple_box.addWidget(self.ple_edit); ple_box.addWidget(ple_cap)
+        row.addLayout(ple_box)
+
+        self.arrow_left = QPushButton("◀")
+        self.arrow_left.setFixedWidth(44)
+        self.arrow_left.clicked.connect(lambda: self.step(-1))
+        row.addWidget(self.arrow_left, 0, Qt.AlignmentFlag.AlignTop)
+
+        x_box = QVBoxLayout()
+        self.x_edit = QDoubleSpinBox()
+        self.x_edit.setDecimals(6); self.x_edit.setRange(-1e12, 1e12); self.x_edit.setValue(0)
+        self.x_edit.setStyleSheet("font-size: 22px; font-weight: bold; color: #0A84FF;")
+        self.x_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.x_edit.editingFinished.connect(lambda: self.sync_from_x(self.x_edit.value()))
+        x_cap = QLabel("x"); x_cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        x_box.addWidget(self.x_edit); x_box.addWidget(x_cap)
+        row.addLayout(x_box)
+
+        self.arrow_right = QPushButton("▶")
+        self.arrow_right.setFixedWidth(44)
+        self.arrow_right.clicked.connect(lambda: self.step(+1))
+        row.addWidget(self.arrow_right, 0, Qt.AlignmentFlag.AlignTop)
+
+        pgt_box = QVBoxLayout()
+        self.pgt_edit = QDoubleSpinBox()
+        self.pgt_edit.setDecimals(6); self.pgt_edit.setRange(0.0, 1.0); self.pgt_edit.setValue(0.5)
+        self.pgt_edit.setSingleStep(0.01)
+        self.pgt_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pgt_edit.setStyleSheet("font-size: 18px; font-weight: bold;")
+        self.pgt_edit.editingFinished.connect(lambda: self.sync_from_pgt(self.pgt_edit.value()))
+        pgt_cap = QLabel("P(X > x)"); pgt_cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pgt_box.addWidget(self.pgt_edit); pgt_box.addWidget(pgt_cap)
+        row.addLayout(pgt_box)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.x_slider = LinkedSlider(self.x_edit, -5, 5)
+        self.x_slider.valueChanged.connect(self._on_value_change)
+        layout.addWidget(self.x_slider)
+
+        self.live_check = QCheckBox("Live (compute while sliding)")
+        self.live_check.setChecked(True)
+        layout.addWidget(self.live_check)
+
+        # --- advanced events ---
+        adv = QHBoxLayout()
         self.mode = QComboBox()
         self.mode.addItems([
-            "P(X ≤ x)",
+            "P(X ≤ x) / P(X > x) — classic",
             "P(X < x)",
             "P(X ≥ x)",
             "P(X > x)",
@@ -304,40 +362,66 @@ class ProbabilityPanel(QWidget):
             "P(a ≤ X ≤ b)",
         ])
         self.mode.currentIndexChanged.connect(self._on_mode_change)
-        layout.addRow("Event:", self.mode)
-
-        self.x_edit = QDoubleSpinBox()
-        self.x_edit.setDecimals(6); self.x_edit.setRange(-1e12, 1e12); self.x_edit.setValue(0)
-        self.x_edit.setMaximumWidth(110)
-        self.x_slider = LinkedSlider(self.x_edit, -5, 5)
-        self.x_slider.valueChanged.connect(self._on_value_change)
-        layout.addRow("x:", self.x_slider)
-
-        self.b_label = QLabel("b:")
+        adv.addWidget(QLabel("Event:"))
+        adv.addWidget(self.mode)
         self.b_edit = QDoubleSpinBox()
         self.b_edit.setDecimals(6); self.b_edit.setRange(-1e12, 1e12); self.b_edit.setValue(1)
         self.b_edit.setMaximumWidth(110)
-        self.b_slider = LinkedSlider(self.b_edit, -5, 5)
-        self.b_slider.valueChanged.connect(self._on_value_change)
-        layout.addRow(self.b_label, self.b_slider)
-
-        self.live_check = QCheckBox("Live (compute while sliding)")
-        self.live_check.setChecked(True)
-        layout.addRow(self.live_check)
-
-        btn = QPushButton("Compute")
-        btn.clicked.connect(self.compute)
-        layout.addRow(btn)
-
+        self.b_edit.setVisible(False)
+        self.b_label = QLabel("b:")
+        self.b_label.setVisible(False)
+        adv.addWidget(self.b_label)
+        adv.addWidget(self.b_edit)
         self.result = QLabel("—")
-        self.result.setStyleSheet("color: #0A84FF; font-size: 24px; font-weight: bold;")
-        layout.addRow("Result:", self.result)
+        self.result.setStyleSheet("color: #0A84FF; font-size: 20px; font-weight: bold;")
+        adv.addWidget(self.result)
+        adv.addStretch(1)
+        layout.addLayout(adv)
 
-        self._on_mode_change()
+    # --- PQRS classic bidirectional sync ---
+
+    def _set_fields(self, ple: float, pgt: float, x: float):
+        self._syncing = True
+        self.ple_edit.setValue(ple)
+        self.pgt_edit.setValue(pgt)
+        self.x_edit.setValue(round(x) if self.main.current_dist.discrete else x)
+        self._syncing = False
+
+    def sync_from_x(self, x: float):
+        if self._syncing or not hasattr(self.main, "_current_dist"):
+            return
+        try:
+            rv = self.main.current_rv()
+            ple = float(rv.cdf(x))
+            self._set_fields(ple, 1.0 - ple, x)
+            self.result.setText(f"P(X ≤ {x:g}) = {ple:.6f}")
+            self.main.update_plot({"mode": "le", "x": x})
+        except Exception as e:
+            self.main.show_error(e)
+
+    def sync_from_ple(self, p: float):
+        if self._syncing or not hasattr(self.main, "_current_dist"):
+            return
+        try:
+            rv = self.main.current_rv()
+            x = float(rv.ppf(p))
+            self._set_fields(p, 1.0 - p, x)
+            self.result.setText(f"x = {x:g}")
+            self.main.update_plot({"mode": "le", "x": x})
+        except Exception as e:
+            self.main.show_error(e)
+
+    def sync_from_pgt(self, p: float):
+        self.sync_from_ple(1.0 - p)
+
+    def step(self, direction: int):
+        dist = self.main.current_dist
+        step = 1 if dist.discrete else 0.1
+        self.sync_from_x(self.x_edit.value() + direction * step)
 
     def _on_mode_change(self):
         is_between = self.mode.currentText() == "P(a ≤ X ≤ b)"
-        self.b_slider.setVisible(is_between)
+        self.b_edit.setVisible(is_between)
         self.b_label.setVisible(is_between)
         if self.live_check.isChecked():
             self.compute()
@@ -348,21 +432,21 @@ class ProbabilityPanel(QWidget):
 
     def update_slider_range(self, lo: float, hi: float):
         self.x_slider.set_range(lo, hi)
-        self.b_slider.set_range(lo, hi)
 
     def compute(self):
         if not hasattr(self.main, "_current_dist"):
             return
         try:
+            if self.mode.currentIndex() == 0:
+                self.sync_from_x(self.x_edit.value())
+                return
             rv = self.main.current_rv()
             dist = self.main.current_dist
             x = self.x_edit.value()
             b = self.b_edit.value()
             mode = self.mode.currentText()
             highlight = None
-            if mode == "P(X ≤ x)":
-                p = float(rv.cdf(x)); highlight = {"mode": "le", "x": x}
-            elif mode == "P(X < x)":
+            if mode == "P(X < x)":
                 if dist.discrete:
                     p = float(rv.cdf(x - 1))
                 else:
@@ -382,13 +466,15 @@ class ProbabilityPanel(QWidget):
                 else:
                     p = 0.0
                 highlight = {"mode": "le", "x": x}
-            else:  # between
+            elif mode == "P(a ≤ X ≤ b)":
                 a = x
                 if dist.discrete:
                     p = float(rv.cdf(b) - rv.cdf(a - 1))
                 else:
                     p = float(rv.cdf(b) - rv.cdf(a))
                 highlight = {"mode": "between", "a": a, "b": b}
+            else:
+                p = float(rv.cdf(x)); highlight = {"mode": "le", "x": x}
             self.result.setText(f"{p:.6f}")
             self.main.update_plot(highlight)
         except Exception as e:
@@ -826,9 +912,14 @@ class MainWindow(QMainWindow):
         else:
             self.op_tabs.setCurrentWidget(self.prob_panel)
             mode = (cmd.get("event") or {}).get("mode")
-            index = {"le": 0, "lt": 1, "ge": 2, "gt": 3, "eq": 4}.get(mode)
-            if index is None:
-                index = 4 if cmd["op"] == "pmf" else (3 if cmd["op"] == "sf" and dist.discrete else (2 if cmd["op"] == "sf" else 0))
+            index = {"le": 0, "lt": 1, "ge": 2, "gt": 3, "eq": 4}.get(mode, 0)
+            if (cmd.get("event") or {}).get("mode") is None:
+                if cmd["op"] == "pmf":
+                    index = 4
+                elif cmd["op"] == "sf":
+                    index = 3 if dist.discrete else 2
+                else:
+                    index = 0
             self.prob_panel.mode.setCurrentIndex(index)
             self.prob_panel.x_edit.setValue(cmd["value"])
             self.prob_panel.compute()

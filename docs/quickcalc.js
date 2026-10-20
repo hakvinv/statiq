@@ -201,8 +201,8 @@
     } else {
       switchOp("probability");
       const modeSel = el("prob-mode");
-      if (cmd.event) modeSel.value = cmd.event.mode === "lt" ? "lt" : cmd.event.mode === "gt" ? "gt" : cmd.event.mode === "ge" ? "ge" : cmd.event.mode === "eq" ? "eq" : "le";
-      else modeSel.value = cmd.op === "sf" ? (currentDist.discrete ? "gt" : "ge") : cmd.op === "pmf" ? "eq" : "le";
+      if (cmd.event) modeSel.value = cmd.event.mode === "lt" ? "lt" : cmd.event.mode === "gt" ? "gt" : cmd.event.mode === "ge" ? "ge" : cmd.event.mode === "eq" ? "eq" : "pqrs";
+      else modeSel.value = cmd.op === "sf" ? (currentDist.discrete ? "gt" : "ge") : cmd.op === "pmf" ? "eq" : "pqrs";
       modeSel.dispatchEvent(new Event("change"));
       setNumber("prob-x", cmd.value);
       runProbability();
